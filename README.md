@@ -32,11 +32,6 @@ curl -X POST http://localhost:8000/api/compare \
 	-d '{"url1":"https://example.com/img1.jpg","url2":"https://example.com/img2.jpg","algorithm":"dhash"}'
 ```
 
-Design notes:
-
-- The `Service` can execute external comparator code (injected executor) and currently uses the embedded comparator implementation.
-- The `Controller` (router) accepts URLs (JSON), validates basic input, and delegates downloading/processing to the `Service`.
-
 O que o algoritmo faz:
 
 - Baixa as duas imagens a partir das URLs (usa `aiohttp`, com timeout e checagem de `content-length`). Imagens muito grandes são rejeitadas; há redimensionamento para `max_dimension` quando configurado.

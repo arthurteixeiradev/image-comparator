@@ -1,10 +1,3 @@
-"""Implementation of image comparison copied from project's `compare.py`.
-
-This module implements the same algorithms, caching and download logic as
-`compare.py` so the service uses identical behavior while keeping code local
-to the service layer.
-"""
-
 from __future__ import annotations
 
 from typing import Dict, Optional, Literal, Final
@@ -14,7 +7,6 @@ import aiohttp
 import hashlib
 import io
 import time
-import pickle
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
@@ -22,26 +14,36 @@ from functools import lru_cache
 from PIL import Image
 import numpy as np
 import imagehash
-import redis
 from collections import OrderedDict
 import threading
-import requests as requests_lib  # type: ignore[import-untyped]
+import requests as requests_lib
+
+from app.core.config import get_settings
+from app.services.redis_service import get_redis_service
 
 logger = logging.getLogger("comparador.service")
+
+
+def _get_config() -> "Config":
+    """Carrega configurações do settings centralizado."""
+    settings = get_settings()
+    return Config(
+        use_redis=settings.REDIS_ENABLED,
+        cache_ttl=settings.REDIS_CACHE_TTL,
+        memory_cache_size=settings.MEMORY_CACHE_SIZE,
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class Config:
     """Configurações otimizadas e imutáveis para thread-safety."""
-    default_algorithm: Literal["phash", "dhash"] = "phash"
+    default_algorithm: Literal["phash", "dhash"] = "dhash"
     hash_size: int = 16
 
     phash_threshold: float = 0.90
     dhash_threshold: float = 0.88
 
     use_redis: bool = True
-    redis_host: str = "localhost"
-    redis_port: int = 6379
-    redis_db: int = 0
     cache_ttl: int = 86400 * 30
     memory_cache_size: int = 1000
 
@@ -59,9 +61,9 @@ class Config:
     thread_pool_size: int = 4
 
 
-config = Config()
+config = _get_config()
 
-# Constantes pré-computadas (evita recriação em cada chamada)
+# Constantes pré-computadas
 THRESHOLD_MAP: Final[Dict[str, float]] = {
     "phash": config.phash_threshold,
     "dhash": config.dhash_threshold,
@@ -73,134 +75,146 @@ HASH_FUNCTIONS: Final[Dict[str, str]] = {
 }
 
 
-# ============================================================================
-# CACHE MULTI-CAMADA
-# ============================================================================
+# Cache multi-camada (Memória + Redis)
 
 
 class CacheLayer:
+    """
+    Cache multi-camada: Memória (L1) + Redis (L2).
+    
+    Estratégia:
+    - L1 (Memória): Acesso ultra-rápido, capacidade limitada, LRU eviction.
+    - L2 (Redis): Persistente, compartilhado entre instâncias, TTL configurável.
+    
+    Fluxo de leitura:
+    1. Verifica L1 (memória) → hit = retorna imediatamente
+    2. Verifica L2 (Redis) → hit = promove para L1, retorna
+    3. Miss = retorna None (caller deve computar o valor)
+    
+    Fluxo de escrita:
+    1. Escreve em L1 (memória)
+    2. Escreve em L2 (Redis) com TTL
+    """
+    
     def __init__(self):
-        # Use thread-safe LRU caches for in-memory layer (hashes and comparisons)
+        # Cache L1: LRU em memória (thread-safe)
         self._memory_cache: "OrderedDict[str, str]" = OrderedDict()
         self._memory_comp_cache: "OrderedDict[str, Dict]" = OrderedDict()
         self._lock = threading.Lock()
-        self.redis_client = None
-        if config.use_redis:
-            try:
-                self.redis_client = redis.Redis(
-                    host=config.redis_host,
-                    port=config.redis_port,
-                    db=config.redis_db,
-                    decode_responses=False,
-                    socket_connect_timeout=2,
-                )
-                self.redis_client.ping()
-                logger.info("✓ Redis conectado")
-            except Exception as e:
-                logger.warning(f"Redis não disponível: {e}")
-                self.redis_client = None
+        
+        # Cache L2: Redis centralizado
+        self._redis = get_redis_service() if config.use_redis else None
+        
+        if self._redis and self._redis.is_connected:
+            logger.info("✓ CacheLayer: Redis conectado via RedisService")
+        else:
+            logger.warning("⚠ CacheLayer: Operando apenas com cache em memória")
 
     def _get_cache_key(self, url: str, algorithm: str) -> str:
-        # sha1 é mais rápido que md5 e suficiente para cache keys
+        """Gera chave de cache para hash de imagem."""
         url_hash = hashlib.sha1(url.encode(), usedforsecurity=False).hexdigest()[:16]
         return f"img_hash:{algorithm}:{url_hash}"
 
     def get(self, url: str, algorithm: str) -> Optional[str]:
+        """Obtém hash de imagem do cache (L1 → L2)."""
         cache_key = self._get_cache_key(url, algorithm)
+        
+        # L1: Verifica cache em memória
         with self._lock:
             if cache_key in self._memory_cache:
-                # mark as recently used
                 self._memory_cache.move_to_end(cache_key)
+                logger.info(f"⚡ CACHE HIT [L1/Memória] hash: {cache_key}")
                 return self._memory_cache[cache_key]
-        if self.redis_client:
-            try:
-                cached = self.redis_client.get(cache_key)
-                if cached:
-                    hash_value = cached.decode()
-                    with self._lock:
-                        self._memory_cache[cache_key] = hash_value
-                        self._memory_cache.move_to_end(cache_key)
-                        if len(self._memory_cache) > config.memory_cache_size:
-                            self._memory_cache.popitem(last=False)
-                    return hash_value
-            except Exception as e:
-                logger.error(f"Erro lendo Redis: {e}")
+        
+        # L2: Verifica Redis
+        if self._redis and self._redis.is_connected:
+            cached = self._redis.get_str(cache_key)
+            if cached:
+                logger.info(f"🔴 CACHE HIT [L2/Redis] hash: {cache_key}")
+                # Promove para L1
+                with self._lock:
+                    self._memory_cache[cache_key] = cached
+                    self._memory_cache.move_to_end(cache_key)
+                    if len(self._memory_cache) > config.memory_cache_size:
+                        self._memory_cache.popitem(last=False)
+                return cached
+        
         return None
 
     def set(self, url: str, algorithm: str, hash_value: str):
+        """Armazena hash de imagem no cache (L1 + L2)."""
         cache_key = self._get_cache_key(url, algorithm)
+        
+        # L1: Armazena em memória
         with self._lock:
             self._memory_cache[cache_key] = hash_value
             self._memory_cache.move_to_end(cache_key)
             if len(self._memory_cache) > config.memory_cache_size:
                 self._memory_cache.popitem(last=False)
-        if self.redis_client:
-            try:
-                self.redis_client.setex(cache_key, config.cache_ttl, hash_value)
-            except Exception as e:
-                logger.error(f"Erro escrevendo Redis: {e}")
+        
+        # L2: Armazena no Redis com TTL
+        if self._redis and self._redis.is_connected:
+            self._redis.set(cache_key, hash_value, ttl=config.cache_ttl)
 
     def get_comparison_result(self, url1: str, url2: str, algorithm: str) -> Optional[Dict]:
-        # Ordenar para consistência, usar sha1 (mais rápido)
+        """Obtém resultado de comparação do cache."""
+        # Ordenar URLs para consistência
         urls = "|".join(sorted([url1, url2]))
         cache_key = f"cmp:{algorithm}:{hashlib.sha1(urls.encode(), usedforsecurity=False).hexdigest()[:16]}"
-        # Check in-memory comparison cache first
+        
+        # L1: Verifica cache em memória
         with self._lock:
             if cache_key in self._memory_comp_cache:
                 self._memory_comp_cache.move_to_end(cache_key)
+                logger.info(f"CACHE HIT [L1/Memória] comparação: {cache_key}")
                 return self._memory_comp_cache[cache_key]
-
-        if self.redis_client:
-            try:
-                cached = self.redis_client.get(cache_key)
-                if cached:
-                    result = pickle.loads(cached)
-                    with self._lock:
-                        self._memory_comp_cache[cache_key] = result
-                        self._memory_comp_cache.move_to_end(cache_key)
-                        if len(self._memory_comp_cache) > config.memory_cache_size:
-                            self._memory_comp_cache.popitem(last=False)
-                    return result
-            except Exception as e:
-                logger.error(f"Erro lendo comparação: {e}")
-
+        
+        # L2: Verifica Redis
+        if self._redis and self._redis.is_connected:
+            result = self._redis.get_object(cache_key)
+            if result:
+                logger.info(f"CACHE HIT [L2/Redis] comparação: {cache_key}")
+                # Promove para L1
+                with self._lock:
+                    self._memory_comp_cache[cache_key] = result
+                    self._memory_comp_cache.move_to_end(cache_key)
+                    if len(self._memory_comp_cache) > config.memory_cache_size:
+                        self._memory_comp_cache.popitem(last=False)
+                return result
+        
         return None
 
     def set_comparison_result(self, url1: str, url2: str, algorithm: str, result: Dict):
+        """Armazena resultado de comparação no cache."""
         urls = "|".join(sorted([url1, url2]))
         cache_key = f"cmp:{algorithm}:{hashlib.sha1(urls.encode(), usedforsecurity=False).hexdigest()[:16]}"
+        
+        # L1: Armazena em memória
         with self._lock:
             self._memory_comp_cache[cache_key] = result
             self._memory_comp_cache.move_to_end(cache_key)
             if len(self._memory_comp_cache) > config.memory_cache_size:
                 self._memory_comp_cache.popitem(last=False)
-
-        if self.redis_client:
-            try:
-                self.redis_client.setex(cache_key, config.cache_ttl, pickle.dumps(result))
-            except Exception as e:
-                logger.error(f"Erro salvando comparação: {e}")
+        
+        # L2: Armazena no Redis com TTL
+        if self._redis and self._redis.is_connected:
+            self._redis.set_object(cache_key, result, ttl=config.cache_ttl)
 
     def clear(self):
+        """Limpa todo o cache (L1 + L2)."""
+        # L1: Limpa memória
         with self._lock:
             self._memory_cache.clear()
             self._memory_comp_cache.clear()
-        if self.redis_client:
-            try:
-                # Usar pipeline + UNLINK (non-blocking delete) para performance
-                pipe = self.redis_client.pipeline()
-                for key in self.redis_client.scan_iter("img_hash:*", count=100):
-                    pipe.unlink(key)  # UNLINK é async no Redis, não bloqueia
-                for key in self.redis_client.scan_iter("cmp:*", count=100):
-                    pipe.unlink(key)
-                pipe.execute()
-            except Exception as e:
-                logger.error(f"Erro limpando Redis: {e}")
+        
+        # L2: Limpa Redis (apenas chaves deste serviço)
+        if self._redis and self._redis.is_connected:
+            self._redis.delete_pattern("img_hash:*")
+            self._redis.delete_pattern("cmp:*")
+            logger.info("Cache limpo (memória + Redis)")
 
 
-# ============================================================================
-# DOWNLOAD OTIMIZADO DE IMAGENS
-# ============================================================================
+# Download otimizado de imagens
 
 
 class ImageDownloader:
@@ -273,9 +287,7 @@ class ImageDownloader:
             pass
 
 
-# ============================================================================
-# ALGORITMOS DE HASH
-# ============================================================================
+# Algoritmos de hash
 
 
 class ImageHasher:
@@ -291,20 +303,17 @@ class ImageHasher:
 
     @staticmethod
     def _preprocess_for_hash(image: Image.Image) -> Image.Image:
-        """Pré-processa imagem para hash: trim, pad, resize.
-        
-        Otimizado para minimizar alocações e conversões.
-        """
+        """Pré-processa imagem para hash: trim, pad, resize."""
         try:
             img = image
             w, h = img.size
             
-            # 1. Trim border (remoção de bordas brancas)
+            # Trim border
             if config.trim_border:
                 img = ImageHasher._trim_border(img, config.border_threshold)
                 w, h = img.size
             
-            # 2. Pad to square (centraliza em quadrado)
+            # Pad to square (centraliza em quadrado)
             target_size = config.hash_image_size
             if config.pad_to_square and w != h:
                 size = max(w, h)
@@ -314,7 +323,7 @@ class ImageHasher:
                 img = background
                 w = h = size
             
-            # 3. Resize final (apenas se tamanho diferente)
+            # Resize final (apenas se tamanho diferente)
             if target_size and (w != target_size or h != target_size):
                 img = img.resize((target_size, target_size), Image.Resampling.LANCZOS)
             
@@ -326,22 +335,16 @@ class ImageHasher:
     @staticmethod
     def _trim_border(image: Image.Image, threshold: int) -> Image.Image:
         """Remove bordas brancas/claras da imagem usando numpy vetorizado.
-        
-        Performance: ~15x mais rápido que Pillow point() em imagens 1024x1024.
-        
+
         Args:
             image: Imagem PIL em modo RGB.
             threshold: Pixels com valor > threshold são considerados borda (0-255).
-        
+
         Returns:
             Imagem cortada sem bordas, ou original se não houver bordas.
-        
-        Raises:
-            Exceções propagam para o caller (_preprocess_for_hash) que já trata.
         """
-        # Converter para grayscale como array numpy (zero-copy quando possível)
+        # Converter para grayscale como array numpy
         gray = np.asarray(image.convert("L"), dtype=np.uint8)
-        
         # Máscara vetorizada: True onde há conteúdo (não-branco)
         content_mask = gray <= threshold
         
@@ -359,7 +362,7 @@ class ImageHasher:
         col_start = cols_with_content.argmax()
         col_end = len(cols_with_content) - cols_with_content[::-1].argmax()
         
-        # Verificar se crop é significativo (evita micro-crops por ruído)
+        # Verificar se crop é significativo
         orig_h, orig_w = gray.shape
         crop_h, crop_w = row_end - row_start, col_end - col_start
         
@@ -385,9 +388,7 @@ class ImageHasher:
         return 1.0 - (distance / max_distance)
 
 
-# ============================================================================
-# COMPARADOR PRINCIPAL
-# ============================================================================
+# Comparador principal
 
 
 class ImageComparator:
@@ -397,7 +398,7 @@ class ImageComparator:
         self.hasher = ImageHasher()
         # Executor for CPU-bound hashing operations
         self.executor = ThreadPoolExecutor(max_workers=config.thread_pool_size)
-        # Dispatch table (evita getattr + string interpolation)
+        # Dispatch table
         self._hash_dispatch: Dict[str, callable] = {
             "phash": self.hasher.calculate_phash,
             "dhash": self.hasher.calculate_dhash,
@@ -413,7 +414,7 @@ class ImageComparator:
             cached_result["time"] = time.time() - start_time
             return cached_result
 
-        # Only single-algorithm comparisons are supported (phash, dhash)
+        # Only single-algorithm comparisons are supported
         result = await self._compare_single_async(url1, url2, algorithm, threshold)
 
         result["time"] = time.time() - start_time
@@ -442,7 +443,7 @@ class ImageComparator:
         if threshold is None:
             threshold = THRESHOLD_MAP.get(algorithm, config.phash_threshold)
 
-        # Baixar/calcular hashes em paralelo (grande ganho de performance)
+        # Baixar/calcular hashes em paralelo
         hash1, hash2 = await asyncio.gather(
             self._get_or_calculate_hash_async(url1, algorithm),
             self._get_or_calculate_hash_async(url2, algorithm),
@@ -476,7 +477,7 @@ class ImageComparator:
         if image is None:
             return None
 
-        # Dispatch direto (mais rápido que getattr + string interpolation)
+        # Dispatch direto
         hash_func = self._hash_dispatch[algorithm]
         loop = asyncio.get_running_loop()
         # Offload CPU-bound hashing to executor to avoid blocking the event loop
@@ -541,9 +542,7 @@ class ImageComparator:
             pass
 
 
-# ============================================================================
 # Service wrapper exposing the same API expected by the router
-# ============================================================================
 
 
 class ImageComparatorService:

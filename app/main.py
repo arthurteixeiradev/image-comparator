@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,6 +7,39 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import router as api_router
 from app.core.config import get_settings
 from app.middleware.logging_middleware import RequestLoggingMiddleware
+from app.services.redis_service import get_redis_service
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Gerencia o ciclo de vida da aplicação (startup/shutdown).
+    
+    Startup:
+    - Inicializa conexão Redis
+    - Verifica health da conexão
+    
+    Shutdown:
+    - Encerra conexão Redis de forma segura
+    - Libera recursos
+    """
+    # === STARTUP ===
+    logger = logging.getLogger("comparador.startup")
+    
+    # Inicializa Redis
+    redis_service = get_redis_service()
+    if redis_service.is_connected:
+        health = redis_service.health_check()
+        logger.info(f"Redis pronto - latência: {health.get('latency_ms')}ms")
+    else:
+        logger.warning("Redis não disponível - usando apenas cache em memória")
+    
+    yield  # Aplicação rodando
+    
+    # === SHUTDOWN ===
+    logger.info("Encerrando conexões...")
+    redis_service.disconnect()
+    logger.info("Aplicação encerrada")
 
 
 def create_app() -> FastAPI:
@@ -16,7 +50,11 @@ def create_app() -> FastAPI:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
 
-    app = FastAPI(title=settings.PROJECT_NAME, version=settings.PROJECT_VERSION)
+    app = FastAPI(
+        title=settings.PROJECT_NAME,
+        version=settings.PROJECT_VERSION,
+        lifespan=lifespan,
+    )
 
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(

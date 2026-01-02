@@ -16,7 +16,7 @@ eggs/
 .eggs/
 lib/
 lib64/
-parts/
+parts/ 
 sdist/
 var/
 wheels/
@@ -64,6 +64,7 @@ env/
 .env.local
 .env.*.local
 
+
 # Logs
 *.log
 logs/
@@ -74,3 +75,7 @@ Thumbs.db
 
 # FastAPI / Uvicorn
 .uvicorn.pid
+
+# Project outputs
+results.csv
+results/

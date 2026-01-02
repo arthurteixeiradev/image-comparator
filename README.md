@@ -29,7 +29,7 @@ Example (curl):
 ```bash
 curl -X POST http://localhost:8000/api/compare \
 	-H "Content-Type: application/json" \
-	-d '{"url1":"https://example.com/img1.jpg","url2":"https://example.com/img2.jpg","algorithm":"multi"}'
+	-d '{"url1":"https://example.com/img1.jpg","url2":"https://example.com/img2.jpg","algorithm":"dhash"}'
 ```
 
 Design notes:

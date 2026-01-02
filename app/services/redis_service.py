@@ -185,121 +185,22 @@ class RedisService:
             logger.error(f"Erro ao serializar objeto '{key}': {e}")
             return False
     
-    def delete(self, *keys: str) -> int:
-        """
-        Remove uma ou mais chaves do Redis.
-        
-        Args:
-            keys: Uma ou mais chaves para remover.
-        
-        Returns:
-            Número de chaves removidas.
-        """
-        if not self.is_connected or not keys:
-            return 0
-        
-        try:
-            return self._client.delete(*keys)
-        except RedisError as e:
-            logger.error(f"Erro ao deletar chaves {keys}: {e}")
-            return 0
-    
-    def exists(self, *keys: str) -> int:
-        """
-        Verifica se uma ou mais chaves existem no Redis.
-        
-        Args:
-            keys: Uma ou mais chaves para verificar.
-        
-        Returns:
-            Número de chaves que existem.
-        """
-        if not self.is_connected or not keys:
-            return 0
-        
-        try:
-            return self._client.exists(*keys)
-        except RedisError as e:
-            logger.error(f"Erro ao verificar chaves {keys}: {e}")
-            return 0
-    
-    def expire(self, key: str, ttl: int) -> bool:
-        """
-        Define ou atualiza o TTL de uma chave existente.
-        
-        Args:
-            key: Chave para atualizar.
-            ttl: Novo TTL em segundos.
-        
-        Returns:
-            True se a chave existe e TTL foi definido, False caso contrário.
-        """
-        if not self.is_connected:
-            return False
-        
-        try:
-            return bool(self._client.expire(key, ttl))
-        except RedisError as e:
-            logger.error(f"Erro ao definir TTL para '{key}': {e}")
-            return False
-    
-    def ttl(self, key: str) -> int:
-        """
-        Retorna o TTL restante de uma chave.
-        
-        Args:
-            key: Chave para verificar.
-        
-        Returns:
-            TTL em segundos, -1 se não tem TTL, -2 se não existe.
-        """
-        if not self.is_connected:
-            return -2
-        
-        try:
-            return self._client.ttl(key)
-        except RedisError as e:
-            logger.error(f"Erro ao obter TTL de '{key}': {e}")
-            return -2
-    
-    def scan_keys(self, pattern: str, count: int = 100) -> list[str]:
-        """
-        Busca chaves que correspondem a um padrão.
-        
-        Args:
-            pattern: Padrão glob (ex: "img_hash:*").
-            count: Número aproximado de chaves por iteração.
-        
-        Returns:
-            Lista de chaves encontradas.
-        """
-        if not self.is_connected:
-            return []
-        
-        try:
-            keys = []
-            for key in self._client.scan_iter(pattern, count=count):
-                keys.append(key.decode("utf-8") if isinstance(key, bytes) else key)
-            return keys
-        except RedisError as e:
-            logger.error(f"Erro ao buscar chaves '{pattern}': {e}")
-            return []
     
     def delete_pattern(self, pattern: str) -> int:
         """
         Remove todas as chaves que correspondem a um padrão.
-        
-        Args:
-            pattern: Padrão glob (ex: "cache:*").
-        
-        Returns:
-            Número de chaves removidas.
+
+        This method scans the keyspace using `scan_iter` and unlinks matching
+        keys. It inlines the scan logic to avoid exposing additional helper
+        methods that are unused elsewhere in the codebase.
         """
         if not self.is_connected:
             return 0
-        
+
         try:
-            keys = self.scan_keys(pattern)
+            keys = []
+            for key in self._client.scan_iter(match=pattern, count=100):
+                keys.append(key.decode("utf-8") if isinstance(key, bytes) else key)
             if keys:
                 return self._client.unlink(*keys)
             return 0
@@ -339,18 +240,6 @@ class RedisService:
                 self._client = None
                 self._is_connected = False
     
-    def reconnect(self) -> bool:
-        """
-        Tenta reconectar ao Redis.
-        
-        Útil após falhas de conexão ou timeout.
-        
-        Returns:
-            True se reconectou com sucesso, False caso contrário.
-        """
-        self.disconnect()
-        self._initialize()
-        return self.is_connected
     
     def health_check(self) -> dict:
         """

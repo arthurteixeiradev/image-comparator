@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import logging
 
 from app.schemas.schemas import CompareResponse, ErrorResponse, CompareRequest
-from app.services.comparator import ImageComparatorService
+from app.services.comparator_service import ImageComparatorService
 from app.services.redis_service import get_redis_service
 from app.schemas.schemas import MassTestRequest, MassTestResponse
 from app.services.mass_test_service import MassTestService

@@ -5,7 +5,7 @@ import time
 import statistics
 from typing import List, Tuple, Optional, Dict, Any
 
-from app.services.comparator import ImageComparatorService
+from app.services.comparator_service import ImageComparatorService
 
 
 class MassTestService:

@@ -31,7 +31,7 @@ except Exception:
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
-from app.services.comparator import ImageComparatorService
+from app.services.comparator_service import ImageComparatorService
 
 REQ_COUNTER = None
 REQ_ERRORS = None

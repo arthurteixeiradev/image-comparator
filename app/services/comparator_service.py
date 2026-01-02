@@ -1,15 +1,27 @@
-"""Compatibility shim: re-export symbols from comparator_service.
+from __future__ import annotations
 
-This file is kept for backward compatibility for code that imports
-``app.services.comparator``. New code should import
-``app.services.comparator_service`` directly.
-"""
+from typing import Dict, Optional, Literal, Final
+from dataclasses import dataclass
+import asyncio
+import aiohttp
+import hashlib
+import io
+import time
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 
-from app.services.comparator_service import *  # noqa: F401,F403
+from PIL import Image
+import numpy as np
+import imagehash
+from collections import OrderedDict
+import threading
+import requests as requests_lib
 
-__all__ = [
-    name for name in globals().keys() if not name.startswith("__")
-]
+from app.core.config import get_settings
+from app.services.redis_service import get_redis_service
+
+logger = logging.getLogger("comparador.service")
 
 def _get_config() -> "Config":
     """Carrega configurações do settings centralizado."""
@@ -62,6 +74,7 @@ HASH_FUNCTIONS: Final[Dict[str, str]] = {
 }
 
 # Cache multi-camada (Memória + Redis)
+
 
 class CacheLayer:
     """
@@ -200,6 +213,7 @@ class CacheLayer:
 
 # Download otimizado de imagens
 
+
 class ImageDownloader:
     def __init__(self):
         self.session = None
@@ -269,7 +283,9 @@ class ImageDownloader:
         except Exception:
             pass
 
+
 # Algoritmos de hash
+
 
 class ImageHasher:
     @staticmethod
@@ -352,6 +368,7 @@ class ImageHasher:
         
         return image
 
+
     @staticmethod
     @lru_cache(maxsize=1024)
     def hamming_distance(hash1: str, hash2: str) -> int:
@@ -367,7 +384,9 @@ class ImageHasher:
         max_distance = config.hash_size ** 2  # ** é mais legível
         return 1.0 - (distance / max_distance)
 
+
 # Comparador principal
+
 
 class ImageComparator:
     def __init__(self):
@@ -519,7 +538,9 @@ class ImageComparator:
         except Exception:
             pass
 
+
 # Service wrapper exposing the same API expected by the router
+
 
 class ImageComparatorService:
     """Service wrapper that uses the local ImageComparator implementation."""
@@ -532,6 +553,7 @@ class ImageComparatorService:
 
     async def close(self) -> None:
         await self._impl.close()
+
 
 class HTTPError(Exception):
     pass

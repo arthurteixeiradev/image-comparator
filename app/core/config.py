@@ -1,20 +1,17 @@
 from functools import lru_cache
+
 try:
-    # pydantic v1
-    from pydantic import BaseSettings  # type: ignore
+    from pydantic import BaseSettings
 except Exception:
-    # pydantic v2+ separates settings into pydantic-settings
-    from pydantic_settings import BaseSettings  # type: ignore
+    from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Comparador API"
     PROJECT_VERSION: str = "0.1.0"
-
-    # Runtime
     DEBUG: bool = True
-
-    # Limits
+    LOG_LEVEL: str = "INFO"
+    CORS_ORIGINS: list[str] = ["*"]
     MAX_IMAGE_SIZE: int = 5 * 1024 * 1024
 
     class Config:

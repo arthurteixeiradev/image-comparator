@@ -22,7 +22,7 @@ uvicorn app.main:app --reload --port 8000
 
 - POST /api/compare
 - Request body (application/json): `url1`, `url2` — URLs públicas das imagens a comparar.
-- Optional fields: `algorithm` (one of `phash`, `dhash`, `ahash`, `whash`, `multi`), `threshold` (float)
+- Optional fields: `algorithm` (one of `phash`, `dhash`), `threshold` (float)
 
 Example (curl):
 

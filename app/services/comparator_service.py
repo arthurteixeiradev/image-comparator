@@ -15,7 +15,6 @@ from typing import Any, Dict, Final, Literal, Optional
 import aiohttp
 import imagehash
 import numpy as np
-import requests as requests_lib
 from PIL import Image
 
 from app.core.config import get_settings
@@ -251,24 +250,6 @@ class ImageDownloader:
             logger.error(f"Erro baixando {url}: {e}")
             return None
 
-    def download_sync(self, url: str) -> Optional[Image.Image]:
-        try:
-            response = requests_lib.get(
-                url, timeout=config.download_timeout, stream=True
-            )
-            response.raise_for_status()
-            content_length = response.headers.get("content-length")
-            if content_length and int(content_length) > config.max_image_size:
-                logger.error(f"Imagem muito grande: {content_length} bytes")
-                return None
-            image = Image.open(io.BytesIO(response.content)).convert("RGB")
-            if config.resize_for_comparison:
-                image = self._resize_image(image)
-            return image
-        except Exception as e:
-            logger.error(f"Erro baixando {url}: {e}")
-            return None
-
     def _resize_image(self, image: Image.Image) -> Image.Image:
         width, height = image.size
         if width > config.max_dimension or height > config.max_dimension:
@@ -439,28 +420,6 @@ class ImageComparator:
 
         return result
 
-    def compare_sync(
-        self,
-        url1: str,
-        url2: str,
-        algorithm: str | None = None,
-        threshold: float | None = None,
-    ) -> Dict:
-        if config.enable_async:
-            # asyncio.run() é preferido em Python 3.10+, mas pode conflitar com loops existentes
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                # Nenhum loop rodando, criar um novo
-                return asyncio.run(self.compare_async(url1, url2, algorithm, threshold))
-            else:
-                # Loop já existe, usar run_until_complete
-                return loop.run_until_complete(
-                    self.compare_async(url1, url2, algorithm, threshold)
-                )
-        else:
-            return self._compare_sync_internal(url1, url2, algorithm, threshold)
-
     async def _compare_single_async(
         self, url1: str, url2: str, algorithm: str, threshold: float | None = None
     ) -> Dict:
@@ -513,55 +472,6 @@ class ImageComparator:
         if hash_value is not None:
             self.cache.set(url, algorithm, hash_value)
         return hash_value
-
-    def _compare_sync_internal(
-        self,
-        url1: str,
-        url2: str,
-        algorithm: str | None = None,
-        threshold: float | None = None,
-    ) -> Dict:
-        start_time = time.time()
-        algorithm = algorithm or config.default_algorithm
-
-        cached_result = self.cache.get_comparison_result(url1, url2, algorithm)
-        if cached_result:
-            cached_result["cache_hit"] = True
-            return cached_result
-
-        img1 = self.downloader.download_sync(url1)
-        img2 = self.downloader.download_sync(url2)
-
-        if img1 is None or img2 is None:
-            return {
-                "are_same": False,
-                "similarity": 0.0,
-                "distance": config.hash_size * config.hash_size,
-                "algorithm": algorithm,
-                "error": "Failed to download images",
-                "time": time.time() - start_time,
-            }
-
-        hash_func = self._hash_dispatch[algorithm]
-        h1 = hash_func(img1)
-        h2 = hash_func(img2)
-        similarity = self.hasher.calculate_similarity(h1, h2)
-        threshold = threshold or THRESHOLD_MAP.get(algorithm, config.phash_threshold)
-
-        distance = int((1 - similarity) * config.hash_size * config.hash_size)
-
-        result = {
-            "are_same": bool(similarity >= threshold),
-            "similarity": round(similarity, 4),
-            "distance": distance,
-            "algorithm": algorithm,
-            "threshold": threshold,
-            "time": time.time() - start_time,
-            "cache_hit": False,
-        }
-
-        self.cache.set_comparison_result(url1, url2, algorithm, result)
-        return result
 
     async def close(self) -> None:
         """Libera recursos de forma segura."""

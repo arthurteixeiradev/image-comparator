@@ -1,27 +1,28 @@
 from __future__ import annotations
 
-from typing import Dict, Optional, Literal, Final
-from dataclasses import dataclass
 import asyncio
-import aiohttp
 import hashlib
 import io
-import time
 import logging
-from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
-
-from PIL import Image
-import numpy as np
-import imagehash
-from collections import OrderedDict
 import threading
+import time
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from functools import lru_cache
+from typing import Any, Dict, Final, Literal, Optional
+
+import aiohttp
+import imagehash
+import numpy as np
 import requests as requests_lib
+from PIL import Image
 
 from app.core.config import get_settings
 from app.services.redis_service import get_redis_service
 
 logger = logging.getLogger("comparador.service")
+
 
 def _get_config() -> "Config":
     """Carrega configurações do settings centralizado."""
@@ -36,6 +37,7 @@ def _get_config() -> "Config":
 @dataclass(frozen=True, slots=True)
 class Config:
     """Configurações otimizadas e imutáveis para thread-safety."""
+
     default_algorithm: Literal["phash", "dhash"] = "dhash"
     hash_size: int = 16
 
@@ -79,30 +81,30 @@ HASH_FUNCTIONS: Final[Dict[str, str]] = {
 class CacheLayer:
     """
     Cache multi-camada: Memória (L1) + Redis (L2).
-    
+
     Estratégia:
     - L1 (Memória): Acesso ultra-rápido, capacidade limitada, LRU eviction.
     - L2 (Redis): Persistente, compartilhado entre instâncias, TTL configurável.
-    
+
     Fluxo de leitura:
     1. Verifica L1 (memória) → hit = retorna imediatamente
     2. Verifica L2 (Redis) → hit = promove para L1, retorna
     3. Miss = retorna None (caller deve computar o valor)
-    
+
     Fluxo de escrita:
     1. Escreve em L1 (memória)
     2. Escreve em L2 (Redis) com TTL
     """
-    
+
     def __init__(self):
         # Cache L1: LRU em memória (thread-safe)
         self._memory_cache: "OrderedDict[str, str]" = OrderedDict()
         self._memory_comp_cache: "OrderedDict[str, Dict]" = OrderedDict()
         self._lock = threading.Lock()
-        
+
         # Cache L2: Redis centralizado
         self._redis = get_redis_service() if config.use_redis else None
-        
+
         if self._redis and self._redis.is_connected:
             logger.info("✓ CacheLayer: Redis conectado via RedisService")
         else:
@@ -116,19 +118,19 @@ class CacheLayer:
     def get(self, url: str, algorithm: str) -> Optional[str]:
         """Obtém hash de imagem do cache (L1 → L2)."""
         cache_key = self._get_cache_key(url, algorithm)
-        
+
         # L1: Verifica cache em memória
         with self._lock:
             if cache_key in self._memory_cache:
                 self._memory_cache.move_to_end(cache_key)
-                logger.info(f"⚡ CACHE HIT [L1/Memória] hash: {cache_key}")
+                logger.info(f"CACHE HIT [L1/Memória] hash: {cache_key}")
                 return self._memory_cache[cache_key]
-        
+
         # L2: Verifica Redis
         if self._redis and self._redis.is_connected:
             cached = self._redis.get_str(cache_key)
             if cached:
-                logger.info(f"🔴 CACHE HIT [L2/Redis] hash: {cache_key}")
+                logger.info(f"CACHE HIT [L2/Redis] hash: {cache_key}")
                 # Promove para L1
                 with self._lock:
                     self._memory_cache[cache_key] = cached
@@ -136,37 +138,39 @@ class CacheLayer:
                     if len(self._memory_cache) > config.memory_cache_size:
                         self._memory_cache.popitem(last=False)
                 return cached
-        
+
         return None
 
     def set(self, url: str, algorithm: str, hash_value: str):
         """Armazena hash de imagem no cache (L1 + L2)."""
         cache_key = self._get_cache_key(url, algorithm)
-        
+
         # L1: Armazena em memória
         with self._lock:
             self._memory_cache[cache_key] = hash_value
             self._memory_cache.move_to_end(cache_key)
             if len(self._memory_cache) > config.memory_cache_size:
                 self._memory_cache.popitem(last=False)
-        
+
         # L2: Armazena no Redis com TTL
         if self._redis and self._redis.is_connected:
             self._redis.set(cache_key, hash_value, ttl=config.cache_ttl)
 
-    def get_comparison_result(self, url1: str, url2: str, algorithm: str) -> Optional[Dict]:
+    def get_comparison_result(
+        self, url1: str, url2: str, algorithm: str
+    ) -> Optional[Dict]:
         """Obtém resultado de comparação do cache."""
         # Ordenar URLs para consistência
         urls = "|".join(sorted([url1, url2]))
         cache_key = f"cmp:{algorithm}:{hashlib.sha1(urls.encode(), usedforsecurity=False).hexdigest()[:16]}"
-        
+
         # L1: Verifica cache em memória
         with self._lock:
             if cache_key in self._memory_comp_cache:
                 self._memory_comp_cache.move_to_end(cache_key)
                 logger.info(f"CACHE HIT [L1/Memória] comparação: {cache_key}")
                 return self._memory_comp_cache[cache_key]
-        
+
         # L2: Verifica Redis
         if self._redis and self._redis.is_connected:
             result = self._redis.get_object(cache_key)
@@ -179,21 +183,21 @@ class CacheLayer:
                     if len(self._memory_comp_cache) > config.memory_cache_size:
                         self._memory_comp_cache.popitem(last=False)
                 return result
-        
+
         return None
 
     def set_comparison_result(self, url1: str, url2: str, algorithm: str, result: Dict):
         """Armazena resultado de comparação no cache."""
         urls = "|".join(sorted([url1, url2]))
         cache_key = f"cmp:{algorithm}:{hashlib.sha1(urls.encode(), usedforsecurity=False).hexdigest()[:16]}"
-        
+
         # L1: Armazena em memória
         with self._lock:
             self._memory_comp_cache[cache_key] = result
             self._memory_comp_cache.move_to_end(cache_key)
             if len(self._memory_comp_cache) > config.memory_cache_size:
                 self._memory_comp_cache.popitem(last=False)
-        
+
         # L2: Armazena no Redis com TTL
         if self._redis and self._redis.is_connected:
             self._redis.set_object(cache_key, result, ttl=config.cache_ttl)
@@ -204,12 +208,13 @@ class CacheLayer:
         with self._lock:
             self._memory_cache.clear()
             self._memory_comp_cache.clear()
-        
+
         # L2: Limpa Redis (apenas chaves deste serviço)
         if self._redis and self._redis.is_connected:
             self._redis.delete_pattern("img_hash:*")
             self._redis.delete_pattern("cmp:*")
             logger.info("Cache limpo (memória + Redis)")
+
 
 # Download otimizado de imagens
 
@@ -248,7 +253,9 @@ class ImageDownloader:
 
     def download_sync(self, url: str) -> Optional[Image.Image]:
         try:
-            response = requests_lib.get(url, timeout=config.download_timeout, stream=True)
+            response = requests_lib.get(
+                url, timeout=config.download_timeout, stream=True
+            )
             response.raise_for_status()
             content_length = response.headers.get("content-length")
             if content_length and int(content_length) > config.max_image_size:
@@ -304,26 +311,28 @@ class ImageHasher:
         try:
             img = image
             w, h = img.size
-            
+
             # Trim border
             if config.trim_border:
                 img = ImageHasher._trim_border(img, config.border_threshold)
                 w, h = img.size
-            
+
             # Pad to square (centraliza em quadrado)
             target_size = config.hash_image_size
             if config.pad_to_square and w != h:
                 size = max(w, h)
                 # Criar background apenas se necessário
                 background = Image.new("RGB", (size, size), (255, 255, 255))
-                background.paste(img, ((size - w) >> 1, (size - h) >> 1))  # bit shift é mais rápido
+                background.paste(
+                    img, ((size - w) >> 1, (size - h) >> 1)
+                )  # bit shift é mais rápido
                 img = background
                 w = h = size
-            
+
             # Resize final (apenas se tamanho diferente)
             if target_size and (w != target_size or h != target_size):
                 img = img.resize((target_size, target_size), Image.Resampling.LANCZOS)
-            
+
             return img
         except Exception as e:
             logger.warning(f"Preprocess fallback: {e}")
@@ -344,30 +353,33 @@ class ImageHasher:
         gray = np.asarray(image.convert("L"), dtype=np.uint8)
         # Máscara vetorizada: True onde há conteúdo (não-branco)
         content_mask = gray <= threshold
-        
+
         # Imagem toda branca - retorna original
         if not content_mask.any():
             return image
-        
+
         # Encontra linhas/colunas com conteúdo (operações vetorizadas SIMD)
         rows_with_content = content_mask.any(axis=1)
         cols_with_content = content_mask.any(axis=0)
-        
+
         # Bounding box: primeiro e último índice True
-        row_start = rows_with_content.argmax()
-        row_end = len(rows_with_content) - rows_with_content[::-1].argmax()
-        col_start = cols_with_content.argmax()
-        col_end = len(cols_with_content) - cols_with_content[::-1].argmax()
-        
+        rows_arr = np.asarray(rows_with_content)
+        cols_arr = np.asarray(cols_with_content)
+        row_start = int(rows_arr.argmax())
+        row_end = len(rows_arr) - int(rows_arr[::-1].argmax())
+        col_start = int(cols_arr.argmax())
+        col_end = len(cols_arr) - int(cols_arr[::-1].argmax())
+
         # Verificar se crop é significativo
         orig_h, orig_w = gray.shape
         crop_h, crop_w = row_end - row_start, col_end - col_start
-        
-        if crop_w < orig_w * 0.99 or crop_h < orig_h * 0.99:
-            return image.crop((col_start, row_start, col_end, row_end))
-        
-        return image
 
+        if crop_w < orig_w * 0.99 or crop_h < orig_h * 0.99:
+            return image.crop(
+                (float(col_start), float(row_start), float(col_end), float(row_end))
+            )
+
+        return image
 
     @staticmethod
     @lru_cache(maxsize=1024)
@@ -381,7 +393,7 @@ class ImageHasher:
     def calculate_similarity(hash1: str, hash2: str) -> float:
         """Converte distância Hamming para similaridade [0, 1]."""
         distance = ImageHasher.hamming_distance(hash1, hash2)
-        max_distance = config.hash_size ** 2  # ** é mais legível
+        max_distance = config.hash_size**2  # ** é mais legível
         return 1.0 - (distance / max_distance)
 
 
@@ -396,12 +408,18 @@ class ImageComparator:
         # Executor for CPU-bound hashing operations
         self.executor = ThreadPoolExecutor(max_workers=config.thread_pool_size)
         # Dispatch table
-        self._hash_dispatch: Dict[str, callable] = {
+        self._hash_dispatch: Dict[str, Any] = {
             "phash": self.hasher.calculate_phash,
             "dhash": self.hasher.calculate_dhash,
         }
 
-    async def compare_async(self, url1: str, url2: str, algorithm: str = None, threshold: float = None) -> Dict:
+    async def compare_async(
+        self,
+        url1: str,
+        url2: str,
+        algorithm: str | None = None,
+        threshold: float | None = None,
+    ) -> Dict:
         start_time = time.time()
         algorithm = algorithm or config.default_algorithm
 
@@ -421,7 +439,13 @@ class ImageComparator:
 
         return result
 
-    def compare_sync(self, url1: str, url2: str, algorithm: str = None, threshold: float = None) -> Dict:
+    def compare_sync(
+        self,
+        url1: str,
+        url2: str,
+        algorithm: str | None = None,
+        threshold: float | None = None,
+    ) -> Dict:
         if config.enable_async:
             # asyncio.run() é preferido em Python 3.10+, mas pode conflitar com loops existentes
             try:
@@ -431,11 +455,15 @@ class ImageComparator:
                 return asyncio.run(self.compare_async(url1, url2, algorithm, threshold))
             else:
                 # Loop já existe, usar run_until_complete
-                return loop.run_until_complete(self.compare_async(url1, url2, algorithm, threshold))
+                return loop.run_until_complete(
+                    self.compare_async(url1, url2, algorithm, threshold)
+                )
         else:
             return self._compare_sync_internal(url1, url2, algorithm, threshold)
 
-    async def _compare_single_async(self, url1: str, url2: str, algorithm: str, threshold: float = None) -> Dict:
+    async def _compare_single_async(
+        self, url1: str, url2: str, algorithm: str, threshold: float | None = None
+    ) -> Dict:
         """Compara duas imagens usando um único algoritmo."""
         if threshold is None:
             threshold = THRESHOLD_MAP.get(algorithm, config.phash_threshold)
@@ -466,7 +494,9 @@ class ImageComparator:
             "threshold": threshold,
         }
 
-    async def _get_or_calculate_hash_async(self, url: str, algorithm: str) -> Optional[str]:
+    async def _get_or_calculate_hash_async(
+        self, url: str, algorithm: str
+    ) -> Optional[str]:
         cached_hash = self.cache.get(url, algorithm)
         if cached_hash:
             return cached_hash
@@ -484,7 +514,13 @@ class ImageComparator:
             self.cache.set(url, algorithm, hash_value)
         return hash_value
 
-    def _compare_sync_internal(self, url1: str, url2: str, algorithm: str = None, threshold: float = None) -> Dict:
+    def _compare_sync_internal(
+        self,
+        url1: str,
+        url2: str,
+        algorithm: str | None = None,
+        threshold: float | None = None,
+    ) -> Dict:
         start_time = time.time()
         algorithm = algorithm or config.default_algorithm
 
@@ -548,7 +584,13 @@ class ImageComparatorService:
     def __init__(self):
         self._impl = ImageComparator()
 
-    async def compare(self, url1: str, url2: str, algorithm: str = None, threshold: float = None) -> Dict:
+    async def compare(
+        self,
+        url1: str,
+        url2: str,
+        algorithm: str | None = None,
+        threshold: float | None = None,
+    ) -> Dict:
         return await self._impl.compare_async(url1, url2, algorithm, threshold)
 
     async def close(self) -> None:

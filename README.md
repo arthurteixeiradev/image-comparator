@@ -36,15 +36,13 @@ O que o algoritmo faz:
 
 - Baixa as duas imagens a partir das URLs (usa `aiohttp`, com timeout e checagem de `content-length`). Imagens muito grandes são rejeitadas; há redimensionamento para `max_dimension` quando configurado.
 
-- Calcula hashes perceptuais com `imagehash`: `phash`, `dhash`, `ahash` e `whash` (cada um com `hash_size` configurável).
+- Calcula hashes perceptuais com `imagehash`: `phash`, `dhash` (cada um com `hash_size` configurável).
 
 - Converte a diferença entre hashes em distância de Hamming e em uma pontuação de similaridade: `similarity = 1 - (distance / max_distance)`, onde `max_distance = hash_size * hash_size`.
 
-- Para o modo `multi`, executa as quatro comparações em paralelo e combina as similaridades com pesos: `phash:0.4`, `dhash:0.3`, `ahash:0.2`, `whash:0.1`. O resultado agregado é comparado contra `multi_threshold`.
-
 - O serviço usa cache em duas camadas: L1 em memória e L2 opcional em Redis (se habilitado). São armazenados hashes por URL+algoritmo e resultados de comparação por par de URLs ordenadas.
 
-- O endpoint retorna JSON com campos principais: `are_same` (bool), `similarity` (float), `distance` (int), `algorithm`, `threshold`, `time` (segundos). Em `multi` há `details` com os resultados por algoritmo.
+- O endpoint retorna JSON com campos principais: `are_same` (bool), `similarity` (float), `distance` (int), `algorithm`, `threshold`, `time` (segundos).
 
 - Em caso de falha no download ou processamento, o resultado inclui `error` e `are_same: false`.
 

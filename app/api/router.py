@@ -65,7 +65,6 @@ async def mass_test(
     service: ImageComparatorService = Depends(get_service),
     token_obj: Dict[str, Any] = Depends(require_token),
 ):
-    """Run a mass-test using provided pairs and return aggregate metrics."""
     try:
         mass_svc = MassTestService(service)
         pairs = [(p.url1, p.url2) for p in body.pairs]

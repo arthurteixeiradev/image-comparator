@@ -4,7 +4,7 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-import requests
+import aiohttp
 
 logger = logging.getLogger("comparador.vtrina")
 
@@ -24,55 +24,58 @@ class VtrinaClient:
         self,
         base_url: Optional[str] = None,
         timeout_seconds: int = 10,
-        session: Optional[requests.Session] = None,
     ) -> None:
         env_url = base_url or os.getenv("VTRINA_BASE_URL")
         if not env_url:
             raise RuntimeError("VTRINA_BASE_URL environment variable is required")
-        self.base_url = env_url
-        self.timeout = timeout_seconds
-        self._session = session or requests.Session()
+        self.base_url = env_url.rstrip("/")
+        self.timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+        self._session: Optional[aiohttp.ClientSession] = None
 
-    def _request(
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(timeout=self.timeout)
+        return self._session
+
+    async def _request(
         self,
         path: str,
-        method: str = "get",
+        method: str = "GET",
         params: Optional[Dict[str, Any]] = None,
         json_body: Optional[Any] = None,
         headers: Optional[Dict[str, str]] = None,
         message: str = "",
     ) -> Any:
-        url = self.base_url.rstrip("/") + "/" + path.lstrip("/")
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        session = await self._get_session()
 
         try:
-            resp = self._session.request(
+            async with session.request(
                 method=method.upper(),
                 url=url,
                 params=params,
                 json=json_body,
                 headers=headers,
-                timeout=self.timeout,
-            )
+            ) as resp:
+                try:
+                    response_data = await resp.json()
+                except (ValueError, aiohttp.ContentTypeError):
+                    response_data = await resp.text()
 
-            try:
-                response_data = resp.json()
-            except ValueError:
-                response_data = resp.text
+                if resp.status >= 400:
+                    logger.warning(
+                        "VtrinaClient: request failed with status=%s for %s",
+                        resp.status,
+                        message or path,
+                    )
+                    raise AppError(
+                        f"Falha na requisição: {message or path}, Status: {resp.status}",
+                        status_code=resp.status,
+                    )
 
-            if resp.status_code >= 400:
-                logger.warning(
-                    "VtrinaClient: request failed with status=%s for %s",
-                    resp.status_code,
-                    message or path,
-                )
-                raise AppError(
-                    f"Falha na requisição: {message or path}, Status: {resp.status_code}",
-                    status_code=resp.status_code,
-                )
+                return response_data
 
-            return response_data
-
-        except requests.RequestException as exc:
+        except aiohttp.ClientError as exc:
             logger.exception(
                 "VtrinaClient: request exception for %s",
                 message or path,
@@ -82,12 +85,17 @@ class VtrinaClient:
                 status_code=None,
             ) from exc
 
-    def get_token(self, token: str) -> Any:
+    async def get_token(self, token: str) -> Any:
         if not token:
             return None
-        return self._request(
+        return await self._request(
             "/api/token",
-            method="get",
+            method="GET",
             params={"token": token},
             message="Busca de token",
         )
+
+    async def close(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None

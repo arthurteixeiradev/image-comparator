@@ -8,6 +8,7 @@ from app.api.router import router as api_router
 from app.core.config import get_settings
 from app.middleware.logging_middleware import RequestLoggingMiddleware
 from app.services.redis_service import get_redis_service
+from app.services.token_service import get_token_service, reset_token_service
 
 
 @asynccontextmanager
@@ -24,6 +25,11 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Encerrando conexões...")
+
+    token_service = get_token_service()
+    await token_service.close()
+    reset_token_service()
+
     redis_service.disconnect()
     logger.info("Aplicação encerrada")
 

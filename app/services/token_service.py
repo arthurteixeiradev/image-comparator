@@ -34,7 +34,7 @@ class TokenService:
     def _cache_key(self, token: str) -> str:
         return f"{self._config.redis_key_prefix}{token}"
 
-    def get(self, token: str) -> Optional[Dict[str, Any]]:
+    async def get(self, token: str) -> Optional[Dict[str, Any]]:
         if not token or not token.strip():
             return None
 
@@ -73,7 +73,7 @@ class TokenService:
             logger.exception("TokenService: error reading from Redis")
 
         try:
-            token_obj = self._vtrina.get_token(token)
+            token_obj = await self._vtrina.get_token(token)
         except AppError:
             logger.warning("TokenService: Vtrina client returned error resolving token")
             return None
@@ -112,6 +112,9 @@ class TokenService:
         except Exception:
             logger.exception("TokenService: failed to clear cache")
         return False
+
+    async def close(self) -> None:
+        await self._vtrina.close()
 
 
 _token_service_instance: Optional[TokenService] = None

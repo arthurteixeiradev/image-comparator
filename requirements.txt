@@ -1,6 +1,7 @@
 fastapi>=0.95
 uvicorn[standard]>=0.22
 pydantic>=1.10
+pydantic-settings>=2.0
 Pillow>=9.0
 imagehash>=4.3
 numpy>=1.24

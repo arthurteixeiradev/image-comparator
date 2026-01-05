@@ -18,14 +18,12 @@ class RedisService:
     _is_connected: bool = False
 
     def __new__(cls) -> "RedisService":
-        """Implementa Singleton pattern para garantir conexão única."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialize()
         return cls._instance
 
     def _initialize(self) -> None:
-        """Inicializa a conexão Redis com as configurações do ambiente."""
         settings = get_settings()
 
         if not settings.REDIS_ENABLED:
@@ -58,37 +56,26 @@ class RedisService:
 
             self._client.ping()
             self._is_connected = True
-            logger.info("✓ Redis conectado com sucesso")
+            logger.info("Redis conectado com sucesso")
 
         except (ConnectionError, TimeoutError) as e:
-            logger.warning(f"⚠ Redis não disponível: {e}")
+            logger.warning(f"Redis não disponível: {e}")
             self._client = None
             self._is_connected = False
         except Exception as e:
-            logger.error(f"✗ Erro ao conectar Redis: {e}")
+            logger.error(f"Erro ao conectar Redis: {e}")
             self._client = None
             self._is_connected = False
 
     @property
     def is_connected(self) -> bool:
-        """Retorna True se há conexão ativa com Redis."""
         return self._is_connected and self._client is not None
 
     @property
     def client(self) -> Optional[redis.Redis]:
-        """Retorna o cliente Redis raw para operações avançadas."""
         return self._client
 
     def get(self, key: str) -> Optional[bytes]:
-        """
-        Obtém um valor do Redis.
-
-        Args:
-            key: Chave para buscar.
-
-        Returns:
-            Valor em bytes ou None se não encontrado/erro.
-        """
         if not self.is_connected or self._client is None:
             return None
 
@@ -100,30 +87,12 @@ class RedisService:
             return None
 
     def get_str(self, key: str) -> Optional[str]:
-        """
-        Obtém um valor do Redis como string.
-
-        Args:
-            key: Chave para buscar.
-
-        Returns:
-            Valor como string ou None se não encontrado/erro.
-        """
         value = self.get(key)
         if value is not None:
             return value.decode("utf-8")
         return None
 
     def get_object(self, key: str) -> Optional[Any]:
-        """
-        Obtém um objeto serializado do Redis (pickle).
-
-        Args:
-            key: Chave para buscar.
-
-        Returns:
-            Objeto deserializado ou None se não encontrado/erro.
-        """
         value = self.get(key)
         if value is not None:
             try:
@@ -135,17 +104,6 @@ class RedisService:
     def set(
         self, key: str, value: Union[str, bytes], ttl: Optional[int] = None
     ) -> bool:
-        """
-        Define um valor no Redis.
-
-        Args:
-            key: Chave para armazenar.
-            value: Valor (string ou bytes).
-            ttl: Tempo de expiração em segundos (opcional).
-
-        Returns:
-            True se sucesso, False caso contrário.
-        """
         if not self.is_connected or self._client is None:
             return False
 
@@ -160,17 +118,6 @@ class RedisService:
             return False
 
     def set_object(self, key: str, obj: Any, ttl: Optional[int] = None) -> bool:
-        """
-        Serializa e armazena um objeto no Redis (pickle).
-
-        Args:
-            key: Chave para armazenar.
-            obj: Objeto Python para serializar.
-            ttl: Tempo de expiração em segundos (opcional).
-
-        Returns:
-            True se sucesso, False caso contrário.
-        """
         try:
             serialized = pickle.dumps(obj)
             return self.set(key, serialized, ttl)
@@ -178,14 +125,18 @@ class RedisService:
             logger.error(f"Erro ao serializar objeto '{key}': {e}")
             return False
 
-    def delete_pattern(self, pattern: str) -> int:
-        """
-        Remove todas as chaves que correspondem a um padrão.
+    def delete(self, key: str) -> bool:
+        if not self.is_connected or self._client is None:
+            return False
 
-        This method scans the keyspace using `scan_iter` and unlinks matching
-        keys. It inlines the scan logic to avoid exposing additional helper
-        methods that are unused elsewhere in the codebase.
-        """
+        try:
+            result = self._client.delete(key)
+            return bool(result)
+        except RedisError as e:
+            logger.error(f"Erro ao deletar chave '{key}': {e}")
+            return False
+
+    def delete_pattern(self, pattern: str) -> int:
         if not self.is_connected or self._client is None:
             return 0
 
@@ -195,19 +146,13 @@ class RedisService:
                 keys.append(key.decode("utf-8") if isinstance(key, bytes) else key)
             if keys:
                 result = self._client.unlink(*keys)
-                return int(result) if result else 0  # type: ignore[arg-type]
+                return int(result) if result else 0
             return 0
         except RedisError as e:
             logger.error(f"Erro ao deletar padrão '{pattern}': {e}")
             return 0
 
     def ping(self) -> bool:
-        """
-        Verifica se a conexão Redis está ativa.
-
-        Returns:
-            True se conectado e respondendo, False caso contrário.
-        """
         if self._client is None:
             return False
 
@@ -219,11 +164,6 @@ class RedisService:
             return False
 
     def disconnect(self) -> None:
-        """
-        Encerra a conexão Redis de forma segura.
-
-        Deve ser chamado durante o shutdown da aplicação.
-        """
         if self._client:
             try:
                 self._client.close()
@@ -235,12 +175,6 @@ class RedisService:
                 self._is_connected = False
 
     def health_check(self) -> dict:
-        """
-        Retorna informações sobre o estado da conexão.
-
-        Returns:
-            Dict com status, latência e info do servidor.
-        """
         import time
 
         from app.core.config import get_settings
@@ -252,7 +186,8 @@ class RedisService:
                 "status": "disconnected",
                 "latency_ms": None,
                 "server_info": None,
-                "cache_ttl_seconds": settings.REDIS_CACHE_TTL,
+                "token_cache_ttl": settings.REDIS_TOKEN_CACHE_TTL,
+                "comparator_cache_ttl": settings.REDIS_COMPARATOR_CACHE_TTL,
             }
 
         try:
@@ -265,7 +200,8 @@ class RedisService:
             return {
                 "status": "connected",
                 "latency_ms": round(latency, 2),
-                "cache_ttl_seconds": settings.REDIS_CACHE_TTL,
+                "token_cache_ttl": settings.REDIS_TOKEN_CACHE_TTL,
+                "comparator_cache_ttl": settings.REDIS_COMPARATOR_CACHE_TTL,
                 "server_info": {
                     "redis_version": info.get("redis_version"),
                     "uptime_days": info.get("uptime_in_days"),
@@ -280,19 +216,10 @@ class RedisService:
             }
 
 
-# Instância global para fácil acesso
 _redis_service: Optional[RedisService] = None
 
 
 def get_redis_service() -> RedisService:
-    """
-    Factory function para obter a instância do RedisService.
-
-    Uso recomendado para injeção de dependência com FastAPI.
-
-    Returns:
-        Instância singleton do RedisService.
-    """
     global _redis_service
     if _redis_service is None:
         _redis_service = RedisService()

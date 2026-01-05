@@ -1,5 +1,6 @@
+from typing import Any, Dict
+
 from pydantic import BaseModel, Field
-from typing import Dict, Any
 
 
 class CompareDetail(BaseModel):
@@ -37,7 +38,11 @@ class Pair(BaseModel):
 class MassTestRequest(BaseModel):
     pairs: list[Pair]
     concurrency: int = Field(10, ge=1)
-    total: int | None = Field(None, ge=1, description="Total de requisições (repetirá pares) - se None, usa len(pairs)")
+    total: int | None = Field(
+        None,
+        ge=1,
+        description="Total de requisições (repetirá pares) - se None, usa len(pairs)",
+    )
     timeout: float = Field(30.0, gt=0.0)
 
 

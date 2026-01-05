@@ -1,11 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException
 import logging
+from typing import Any, Dict
 
-from app.schemas.schemas import CompareResponse, ErrorResponse, CompareRequest
+from fastapi import APIRouter, Depends, HTTPException
+
+from app.dependencies.auth import require_token
+from app.schemas.schemas import (
+    CompareRequest,
+    CompareResponse,
+    ErrorResponse,
+    MassTestRequest,
+    MassTestResponse,
+)
 from app.services.comparator_service import ImageComparatorService
-from app.services.redis_service import get_redis_service
-from app.schemas.schemas import MassTestRequest, MassTestResponse
 from app.services.mass_test_service import MassTestService
+from app.services.redis_service import get_redis_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -21,17 +29,22 @@ def get_service() -> ImageComparatorService:
 async def health_check():
     redis_service = get_redis_service()
     redis_health = redis_service.health_check()
-    
+
     return {
         "status": "healthy",
         "redis": redis_health,
     }
 
 
-@router.post("/compare", response_model=CompareResponse, responses={400: {"model": ErrorResponse}})
+@router.post(
+    "/compare",
+    response_model=CompareResponse,
+    responses={400: {"model": ErrorResponse}},
+)
 async def compare_images(
     body: CompareRequest,
     service: ImageComparatorService = Depends(get_service),
+    token_obj: Dict[str, Any] = Depends(require_token),
 ):
     try:
         result = await service.compare(
@@ -50,13 +63,15 @@ async def compare_images(
 async def mass_test(
     body: MassTestRequest,
     service: ImageComparatorService = Depends(get_service),
+    token_obj: Dict[str, Any] = Depends(require_token),
 ):
     """Run a mass-test using provided pairs and return aggregate metrics."""
     try:
         mass_svc = MassTestService(service)
         pairs = [(p.url1, p.url2) for p in body.pairs]
-        res = await mass_svc.run(pairs, concurrency=body.concurrency, total=body.total, timeout=body.timeout)
-        # wrap metrics into response model shape
+        res = await mass_svc.run(
+            pairs, concurrency=body.concurrency, total=body.total, timeout=body.timeout
+        )
         metrics = res.get("metrics", {})
         return {
             "metrics": {

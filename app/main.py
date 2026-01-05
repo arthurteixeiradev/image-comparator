@@ -12,31 +12,17 @@ from app.services.redis_service import get_redis_service
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Gerencia o ciclo de vida da aplicação (startup/shutdown).
-    
-    Startup:
-    - Inicializa conexão Redis
-    - Verifica health da conexão
-    
-    Shutdown:
-    - Encerra conexão Redis de forma segura
-    - Libera recursos
-    """
-    # === STARTUP ===
     logger = logging.getLogger("comparador.startup")
-    
-    # Inicializa Redis
+
     redis_service = get_redis_service()
     if redis_service.is_connected:
         health = redis_service.health_check()
         logger.info(f"Redis pronto - latência: {health.get('latency_ms')}ms")
     else:
         logger.warning("Redis não disponível - usando apenas cache em memória")
-    
-    yield  # Aplicação rodando
-    
-    # === SHUTDOWN ===
+
+    yield
+
     logger.info("Encerrando conexões...")
     redis_service.disconnect()
     logger.info("Aplicação encerrada")

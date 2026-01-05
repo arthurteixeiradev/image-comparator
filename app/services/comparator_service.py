@@ -28,7 +28,7 @@ def _get_config() -> "Config":
     settings = get_settings()
     return Config(
         use_redis=settings.REDIS_ENABLED,
-        cache_ttl=settings.REDIS_CACHE_TTL,
+        cache_ttl=settings.REDIS_COMPARATOR_CACHE_TTL,
         memory_cache_size=settings.MEMORY_CACHE_SIZE,
     )
 
@@ -44,7 +44,7 @@ class Config:
     dhash_threshold: float = 0.88
 
     use_redis: bool = True
-    cache_ttl: int = 86400 * 30
+    cache_ttl: int = 300  # 5 minutos (REDIS_COMPARATOR_CACHE_TTL)
     memory_cache_size: int = 1000
 
     download_timeout: int = 10

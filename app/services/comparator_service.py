@@ -5,7 +5,6 @@ import hashlib
 import io
 import logging
 import threading
-import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -41,7 +40,7 @@ class Config:
     hash_size: int = 16
 
     phash_threshold: float = 0.90
-    dhash_threshold: float = 0.88
+    dhash_threshold: float = 0.90
 
     use_redis: bool = True
     cache_ttl: int = 300  # 5 minutos (REDIS_COMPARATOR_CACHE_TTL)
@@ -58,7 +57,7 @@ class Config:
     pad_to_square: bool = True
 
     enable_async: bool = True
-    thread_pool_size: int = 4
+    thread_pool_size: int = 8
 
 
 config = _get_config()
@@ -401,20 +400,14 @@ class ImageComparator:
         algorithm: str | None = None,
         threshold: float | None = None,
     ) -> Dict:
-        start_time = time.time()
         algorithm = algorithm or config.default_algorithm
 
         cached_result = self.cache.get_comparison_result(url1, url2, algorithm)
-        if cached_result:
-            cached_result["cache_hit"] = True
-            cached_result["time"] = time.time() - start_time
+        if cached_result and "isEqual" in cached_result:
             return cached_result
 
         # Only single-algorithm comparisons are supported
         result = await self._compare_single_async(url1, url2, algorithm, threshold)
-
-        result["time"] = time.time() - start_time
-        result["cache_hit"] = False
 
         self.cache.set_comparison_result(url1, url2, algorithm, result)
 
@@ -435,23 +428,23 @@ class ImageComparator:
 
         if hash1 is None or hash2 is None:
             return {
-                "are_same": False,
-                "similarity": 0.0,
-                "distance": config.hash_size * config.hash_size,
-                "algorithm": algorithm,
-                "error": "Failed to download or process images",
+                "isEqual": False,
+                "message": "Erro ao processar as imagens.",
             }
 
-        distance = self.hasher.hamming_distance(hash1, hash2)
         similarity = self.hasher.calculate_similarity(hash1, hash2)
+        is_equal = bool(similarity >= threshold)
 
-        return {
-            "are_same": bool(similarity >= threshold),
-            "similarity": round(similarity, 4),
-            "distance": int(distance),
-            "algorithm": algorithm,
-            "threshold": threshold,
-        }
+        if is_equal:
+            return {
+                "isEqual": True,
+                "message": "Os arrays de imagens são iguais.",
+            }
+        else:
+            return {
+                "isEqual": False,
+                "message": "Os arrays de imagens são diferentes.",
+            }
 
     async def _get_or_calculate_hash_async(
         self, url: str, algorithm: str

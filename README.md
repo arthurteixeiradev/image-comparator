@@ -21,15 +21,52 @@ uvicorn app.main:app --reload --port 8000
 3. Endpoint
 
 - POST /api/compare
-- Request body (application/json): `url1`, `url2` — URLs públicas das imagens a comparar.
-- Optional fields: `algorithm` (one of `phash`, `dhash`), `threshold` (float)
+- Request body (application/json):
+
+```json
+{
+    "imagem1": "https://example.com/img1.jpg",
+    "imagem2": "https://example.com/img2.jpg"
+}
+```
+
+- Campos opcionais: `algorithm` (one of `phash`, `dhash`), `threshold` (float entre 0 e 1)
 
 Example (curl):
 
 ```bash
 curl -X POST http://localhost:8000/api/compare \
 	-H "Content-Type: application/json" \
-	-d '{"url1":"https://example.com/img1.jpg","url2":"https://example.com/img2.jpg","algorithm":"dhash"}'
+	-d '{"imagem1":"https://example.com/img1.jpg","imagem2":"https://example.com/img2.jpg"}'
+```
+
+4. Resposta
+
+Se as imagens são iguais:
+
+```json
+{
+    "isEqual": true,
+    "message": "Os arrays de imagens são iguais."
+}
+```
+
+Se as imagens são diferentes:
+
+```json
+{
+    "isEqual": false,
+    "message": "Os arrays de imagens são diferentes."
+}
+```
+
+Em caso de erro no processamento:
+
+```json
+{
+    "isEqual": false,
+    "message": "Erro ao processar as imagens."
+}
 ```
 
 O que o algoritmo faz:
@@ -38,14 +75,10 @@ O que o algoritmo faz:
 
 - Calcula hashes perceptuais com `imagehash`: `phash`, `dhash` (cada um com `hash_size` configurável).
 
-- Converte a diferença entre hashes em distância de Hamming e em uma pontuação de similaridade: `similarity = 1 - (distance / max_distance)`, onde `max_distance = hash_size * hash_size`.
+- Converte a diferença entre hashes em distância de Hamming e em uma pontuação de similaridade para determinar se as imagens são iguais.
 
 - O serviço usa cache em duas camadas: L1 em memória e L2 opcional em Redis (se habilitado). São armazenados hashes por URL+algoritmo e resultados de comparação por par de URLs ordenadas.
 
-- O endpoint retorna JSON com campos principais: `are_same` (bool), `similarity` (float), `distance` (int), `algorithm`, `threshold`, `time` (segundos).
-
-- Em caso de falha no download ou processamento, o resultado inclui `error` e `are_same: false`.
-
 - Se o Redis estiver indisponível, o serviço faz degrade gracioso para o cache em memória e registra o problema nos logs.
 
-Esses passos replicam a lógica presente no `app/services/comparator.py` para garantir comportamento idêntico ao código original.
+Esses passos replicam a lógica presente no `app/services/comparator_service.py` para garantir comportamento idêntico ao código original.

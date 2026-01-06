@@ -16,7 +16,7 @@ eggs/
 .eggs/
 lib/
 lib64/
-parts/ 
+parts/
 sdist/
 var/
 wheels/
@@ -79,3 +79,5 @@ Thumbs.db
 # Project outputs
 results.csv
 results/
+
+node-test

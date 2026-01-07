@@ -9,3 +9,4 @@ scripts/
 README.md
 Dockerfile
 .dockerignore
+node-test

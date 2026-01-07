@@ -21,6 +21,11 @@ def get_service() -> ImageComparatorService:
     return _shared_service
 
 
+@router.get("/ping-pong")
+async def ping_pong():
+    return {"message": "pong"}
+
+
 @router.get("/health")
 async def health_check():
     redis_service = get_redis_service()

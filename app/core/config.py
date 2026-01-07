@@ -47,8 +47,6 @@ class Settings(BaseSettings):
     MEMORY_CACHE_SIZE: int = 1000
 
     class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
         case_sensitive = True
         extra = "ignore"
 
